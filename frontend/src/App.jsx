@@ -93,21 +93,68 @@ function EmptyState({ title, text }) {
   );
 }
 
-async function get(path) {
-  const res = await fetch(`${API}${path}`);
-  if (!res.ok) throw new Error("Request failed");
+/* ---------- API with sign-in token ---------- */
+
+const TOKEN_KEY = "fp-token";
+let authToken = null;
+let onUnauthorized = () => {};
+
+function loadToken() {
+  try {
+    authToken = localStorage.getItem(TOKEN_KEY);
+  } catch {
+    authToken = null;
+  }
+  return authToken;
+}
+
+function saveToken(token) {
+  authToken = token;
+  try {
+    localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    /* storage not available */
+  }
+}
+
+function clearToken() {
+  authToken = null;
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* storage not available */
+  }
+}
+
+async function request(method, path, body) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+
+  const res = await fetch(`${API}${path}`, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.json()).detail;
+    } catch {
+      /* no message from the server */
+    }
+    if (res.status === 401 && authToken) onUnauthorized();
+    const error = new Error(typeof detail === "string" && detail ? detail : "Request failed");
+    error.status = res.status;
+    throw error;
+  }
   return res.json();
 }
 
-async function post(path, body) {
-  const res = await fetch(`${API}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error("Request failed");
-  return res.json();
-}
+const get = (path) => request("GET", path);
+const post = (path, body) => request("POST", path, body);
+const del = (path) => request("DELETE", path);
 
 const CONNECTION_ERROR =
   "Could not reach the backend. Make sure the server is running on port 8000, then try again.";
@@ -773,7 +820,7 @@ function HistoryView() {
   async function remove(id) {
     if (!window.confirm("Delete this item from your history?")) return;
     try {
-      await fetch(`${API}/history/${id}`, { method: "DELETE" });
+      await del(`/history/${id}`);
       if (selected?.id === id) setSelected(null);
       load();
     } catch {
@@ -850,6 +897,120 @@ function HistoryView() {
   );
 }
 
+/* ---------- Sign in ---------- */
+
+function AuthScreen({ onSignedIn }) {
+  const [mode, setMode] = useState("login");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const isLogin = mode === "login";
+
+  async function submit(event) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const data = await post(isLogin ? "/auth/login" : "/auth/register", {
+        name,
+        email,
+        password,
+      });
+      onSignedIn(data);
+    } catch (err) {
+      setError(err.status ? err.message : CONNECTION_ERROR);
+    }
+    setLoading(false);
+  }
+
+  function switchMode(next) {
+    setMode(next);
+    setError("");
+  }
+
+  return (
+    <div className="auth-shell">
+      <div className="auth-card">
+        <div className="brand brand-light">
+          <span className="logo" aria-hidden="true">
+            FP
+          </span>
+          <div>
+            <strong>FreelancePilot</strong>
+            <span>Plan before you quote</span>
+          </div>
+        </div>
+
+        <h1>{isLogin ? "Welcome back" : "Create your account"}</h1>
+        <p className="auth-sub">
+          {isLogin
+            ? "Sign in to see your saved plans, scope checks and proposals."
+            : "Your work is saved to your own account. Nobody else can see it."}
+        </p>
+
+        <form onSubmit={submit}>
+          {!isLogin && (
+            <>
+              <label htmlFor="a-name">Your name</label>
+              <input
+                id="a-name"
+                type="text"
+                autoComplete="name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </>
+          )}
+          <label htmlFor="a-email">Email</label>
+          <input
+            id="a-email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+          <label htmlFor="a-password">Password</label>
+          <input
+            id="a-password"
+            type="password"
+            autoComplete={isLogin ? "current-password" : "new-password"}
+            minLength={isLogin ? undefined : 8}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          {!isLogin && <p className="muted small">Use at least 8 characters.</p>}
+
+          {error && (
+            <p className="alert" role="alert">
+              {error}
+            </p>
+          )}
+
+          <button type="submit" className="btn btn-primary auth-submit" disabled={loading}>
+            {loading ? "Please wait" : isLogin ? "Sign in" : "Create account"}
+          </button>
+        </form>
+
+        <p className="auth-switch">
+          {isLogin ? "New here?" : "Already have an account?"}{" "}
+          <button
+            type="button"
+            className="link"
+            onClick={() => switchMode(isLogin ? "register" : "login")}
+          >
+            {isLogin ? "Create an account" : "Sign in"}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- App shell ---------- */
 
 const NAV = [
@@ -891,6 +1052,8 @@ function getInitialTheme() {
 export default function App() {
   const [tab, setTab] = useState("analyze");
   const [theme, setTheme] = useState(getInitialTheme);
+  const [session, setSession] = useState(null);
+  const [checking, setChecking] = useState(() => Boolean(loadToken()));
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -900,6 +1063,44 @@ export default function App() {
       /* storage not available */
     }
   }, [theme]);
+
+  // If a saved token exists, check that it is still valid
+  useEffect(() => {
+    onUnauthorized = () => {
+      clearToken();
+      setSession(null);
+    };
+    if (!loadToken()) return;
+    get("/auth/me")
+      .then((user) => setSession({ user }))
+      .catch(() => clearToken())
+      .finally(() => setChecking(false));
+  }, []);
+
+  function handleSignedIn(data) {
+    saveToken(data.token);
+    setSession({ user: data.user });
+    setTab("analyze");
+  }
+
+  async function signOut() {
+    try {
+      await post("/auth/logout");
+    } catch {
+      /* sign out locally even if the server is not reachable */
+    }
+    clearToken();
+    setSession(null);
+  }
+
+  if (checking) {
+    return (
+      <div className="auth-shell">
+        <p className="muted">Loading</p>
+      </div>
+    );
+  }
+  if (!session) return <AuthScreen onSignedIn={handleSignedIn} />;
 
   return (
     <div className="shell">
@@ -930,6 +1131,16 @@ export default function App() {
             </button>
           ))}
         </nav>
+
+        <div className="account">
+          <div>
+            <strong>{session.user.name}</strong>
+            <span>{session.user.email}</span>
+          </div>
+          <button type="button" onClick={signOut}>
+            Sign out
+          </button>
+        </div>
 
         <div className="theme-switch" role="group" aria-label="Color theme">
           <button type="button" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>
