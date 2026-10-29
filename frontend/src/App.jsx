@@ -8,8 +8,7 @@ const EXAMPLES = {
     "Hi, I need an e-commerce website with payment integration within 10 days. My budget is $300.",
   agreement:
     "I will design one logo for your bakery. Includes 2 revisions. Final files in PNG and SVG.",
-  request:
-    "Great work! Can you also make some social media posts and business cards?",
+  request: "Great work! Can you also make some social media posts and business cards?",
 };
 
 /* ---------- small helpers ---------- */
@@ -69,13 +68,18 @@ function Section({ title, action, children }) {
   );
 }
 
-function Loading() {
+function Loading({ slow }) {
   return (
     <div className="panel skeleton" aria-busy="true" aria-live="polite">
       <div className="sk sk-title" />
       <div className="sk" />
       <div className="sk" />
       <div className="sk sk-short" />
+      {slow && (
+        <p className="muted small">
+          The AI is thinking. This can take a few seconds up to a minute.
+        </p>
+      )}
     </div>
   );
 }
@@ -87,6 +91,12 @@ function EmptyState({ title, text }) {
       <p>{text}</p>
     </div>
   );
+}
+
+async function get(path) {
+  const res = await fetch(`${API}${path}`);
+  if (!res.ok) throw new Error("Request failed");
+  return res.json();
 }
 
 async function post(path, body) {
@@ -102,31 +112,238 @@ async function post(path, body) {
 const CONNECTION_ERROR =
   "Could not reach the backend. Make sure the server is running on port 8000, then try again.";
 
+/* ---------- AI helpers ---------- */
+
+function useAIStatus() {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    get("/ai/status")
+      .then(setStatus)
+      .catch(() =>
+        setStatus({ running: false, model_installed: false, message: "Backend is not reachable." }),
+      );
+  }, []);
+  return status;
+}
+
+function aiReady(status) {
+  return Boolean(status?.running && status?.model_installed);
+}
+
+function AIToggle({ checked, onChange, status }) {
+  const ready = aiReady(status);
+  return (
+    <div className="ai-toggle">
+      <label>
+        <input
+          type="checkbox"
+          checked={checked && ready}
+          disabled={!ready}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span>Add AI insights</span>
+      </label>
+      <p className="muted small">
+        {status === null
+          ? "Checking AI status."
+          : ready
+            ? status.provider === "groq"
+              ? "Uses an online AI (Groq). Your text is sent to Groq to get the answer."
+              : `Runs ${status.model} on your computer. Slower: can take up to a minute.`
+            : `${status.message} Everything else works without AI.`}
+      </p>
+    </div>
+  );
+}
+
+function AIList({ title, items, flag }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <>
+      <h4 className="ai-sub">{title}</h4>
+      <ul className={flag ? "flags" : "plain"}>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function AIError({ message }) {
+  return (
+    <Section title="AI insights">
+      <p className="muted">{message} The rule-based result is still valid.</p>
+    </Section>
+  );
+}
+
+function AIAnalyzeInsights({ ai }) {
+  if (!ai) return null;
+  if (ai.error) return <AIError message={ai.error} />;
+  return (
+    <Section title="AI insights">
+      {ai.summary && <p className="ai-summary">{ai.summary}</p>}
+      <AIList title="Things the client may expect but did not say" items={ai.assumptions} />
+      <AIList title="More questions to ask" items={ai.questions} />
+      <AIList title="Extra risks" items={ai.risks} flag />
+      <p className="muted small">
+        Written by {ai.model}. AI can make mistakes, so check it before you use it.
+      </p>
+    </Section>
+  );
+}
+
+function AIScopeOpinion({ ai }) {
+  if (!ai) return null;
+  if (ai.error) return <AIError message={ai.error} />;
+  return (
+    <Section
+      title="AI second opinion"
+      action={
+        <span className={`pill ${ai.agrees_with_rules ? "agree" : "differ"}`}>
+          {ai.agrees_with_rules ? "Matches the rules" : "Differs from the rules"}
+        </span>
+      }
+    >
+      <p className="ai-summary">
+        <strong>{ai.verdict}.</strong> {ai.reasoning}
+      </p>
+      {!ai.agrees_with_rules && (
+        <p className="ai-note">
+          The AI and the rule check disagree. Read your agreement and decide for yourself.
+        </p>
+      )}
+      {ai.reply && (
+        <>
+          <h4 className="ai-sub">AI reply draft</h4>
+          <p className="reply">{ai.reply}</p>
+          <CopyButton label="Copy AI reply" text={ai.reply} />
+        </>
+      )}
+      <p className="muted small">
+        Written by {ai.model}. AI can make mistakes, so check it before you use it.
+      </p>
+    </Section>
+  );
+}
+
 /* ---------- Message analyzer ---------- */
+
+function AnalyzeResult({ result }) {
+  const facts = [
+    ["Project type", result.project_type, result.project_type === "Unknown"],
+    ["Budget", result.budget, !result.budget],
+    ["Deadline", result.deadline, !result.deadline],
+  ];
+
+  return (
+    <div className="panel result">
+      <dl className="facts">
+        {facts.map(([label, value, missing]) => (
+          <div key={label} className={missing ? "fact is-missing" : "fact"}>
+            <dt>{label}</dt>
+            <dd>{missing ? "Not mentioned" : value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {result.requirements?.length > 0 && (
+        <Section title="Requirements found">
+          <div className="chips">
+            {result.requirements.map((r) => (
+              <span className="chip" key={r}>
+                {r}
+              </span>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {result.missing_fields?.length > 0 && (
+        <Section title="Missing from the message">
+          <ul className="flags">
+            {result.missing_fields.map((m) => (
+              <li key={m}>{m}</li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {result.suggested_questions?.length > 0 && (
+        <Section
+          title="Questions to ask the client"
+          action={
+            <CopyButton
+              label="Copy questions"
+              text={result.suggested_questions.map((q) => `- ${q}`).join("\n")}
+            />
+          }
+        >
+          <ul className="plain">
+            {result.suggested_questions.map((q) => (
+              <li key={q}>{q}</li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {result.plan?.risks?.length > 0 && (
+        <Section title="Risks to watch">
+          <ul className="flags">
+            {result.plan.risks.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {result.plan?.tasks?.length > 0 && (
+        <Section title="Task breakdown">
+          <ol className="steps">
+            {result.plan.tasks.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ol>
+        </Section>
+      )}
+
+      {result.plan?.deliverables?.length > 0 && (
+        <Section title="Deliverables">
+          <ul className="plain">
+            {result.plan.deliverables.map((d) => (
+              <li key={d}>{d}</li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      <AIAnalyzeInsights ai={result.ai} />
+      <p className="note">{result.plan?.note}</p>
+    </div>
+  );
+}
 
 function AnalyzeView() {
   const [message, setMessage] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [useAI, setUseAI] = useState(false);
+  const aiStatus = useAIStatus();
+  const aiOn = useAI && aiReady(aiStatus);
 
   async function run() {
     setLoading(true);
     setError("");
     setResult(null);
     try {
-      setResult(await post("/analyze", { message }));
+      setResult(await post("/analyze", { message, use_ai: aiOn }));
     } catch {
       setError(CONNECTION_ERROR);
     }
     setLoading(false);
   }
-
-  const facts = result && [
-    ["Project type", result.project_type, result.project_type === "Unknown"],
-    ["Budget", result.budget, !result.budget],
-    ["Deadline", result.deadline, !result.deadline],
-  ];
 
   return (
     <div className="workspace">
@@ -140,6 +357,7 @@ function AnalyzeView() {
             value={message}
             onChange={(e) => setMessage(e.target.value)}
           />
+          <AIToggle checked={useAI} onChange={setUseAI} status={aiStatus} />
           <div className="actions">
             <button
               type="button"
@@ -161,8 +379,12 @@ function AnalyzeView() {
       </div>
 
       <div className="output-col">
-        {error && <p className="alert" role="alert">{error}</p>}
-        {loading && <Loading />}
+        {error && (
+          <p className="alert" role="alert">
+            {error}
+          </p>
+        )}
+        {loading && <Loading slow={aiOn} />}
         {!loading && !result && !error && (
           <EmptyState
             title="Your project plan will appear here"
@@ -170,88 +392,7 @@ function AnalyzeView() {
           />
         )}
 
-        {result && (
-          <div className="panel result">
-            <dl className="facts">
-              {facts.map(([label, value, missing]) => (
-                <div key={label} className={missing ? "fact is-missing" : "fact"}>
-                  <dt>{label}</dt>
-                  <dd>{missing ? "Not mentioned" : value}</dd>
-                </div>
-              ))}
-            </dl>
-
-            {result.requirements?.length > 0 && (
-              <Section title="Requirements found">
-                <div className="chips">
-                  {result.requirements.map((r) => (
-                    <span className="chip" key={r}>{r}</span>
-                  ))}
-                </div>
-              </Section>
-            )}
-
-            {result.missing_fields?.length > 0 && (
-              <Section title="Missing from the message">
-                <ul className="flags">
-                  {result.missing_fields.map((m) => (
-                    <li key={m}>{m}</li>
-                  ))}
-                </ul>
-              </Section>
-            )}
-
-            {result.suggested_questions?.length > 0 && (
-              <Section
-                title="Questions to ask the client"
-                action={
-                  <CopyButton
-                    label="Copy questions"
-                    text={result.suggested_questions.map((q) => `- ${q}`).join("\n")}
-                  />
-                }
-              >
-                <ul className="plain">
-                  {result.suggested_questions.map((q) => (
-                    <li key={q}>{q}</li>
-                  ))}
-                </ul>
-              </Section>
-            )}
-
-            {result.plan?.risks?.length > 0 && (
-              <Section title="Risks to watch">
-                <ul className="flags">
-                  {result.plan.risks.map((r) => (
-                    <li key={r}>{r}</li>
-                  ))}
-                </ul>
-              </Section>
-            )}
-
-            {result.plan?.tasks?.length > 0 && (
-              <Section title="Task breakdown">
-                <ol className="steps">
-                  {result.plan.tasks.map((t) => (
-                    <li key={t}>{t}</li>
-                  ))}
-                </ol>
-              </Section>
-            )}
-
-            {result.plan?.deliverables?.length > 0 && (
-              <Section title="Deliverables">
-                <ul className="plain">
-                  {result.plan.deliverables.map((d) => (
-                    <li key={d}>{d}</li>
-                  ))}
-                </ul>
-              </Section>
-            )}
-
-            <p className="note">{result.plan?.note}</p>
-          </div>
-        )}
+        {result && <AnalyzeResult result={result} />}
       </div>
     </div>
   );
@@ -266,19 +407,70 @@ const VERDICT_STYLE = {
   "Out of scope": "bad",
 };
 
+function ScopeResult({ result }) {
+  return (
+    <div className="panel result">
+      <div className={`verdict ${VERDICT_STYLE[result.verdict] || "warn"}`}>
+        <strong>{result.verdict}</strong>
+        <span>{result.explanation}</span>
+      </div>
+
+      <div className="split">
+        <Section title="Covered by the agreement">
+          {result.in_scope?.length ? (
+            <ul className="plain">
+              {result.in_scope.map((i) => (
+                <li key={i}>{i}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">Nothing found.</p>
+          )}
+        </Section>
+        <Section title="Not in the agreement">
+          {result.out_of_scope?.length ? (
+            <ul className="flags">
+              {result.out_of_scope.map((i) => (
+                <li key={i}>{i}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">Nothing found.</p>
+          )}
+        </Section>
+      </div>
+
+      {result.revision_note && <p className="callout">{result.revision_note}</p>}
+
+      <Section
+        title="Suggested reply"
+        action={<CopyButton label="Copy reply" text={result.suggested_reply} />}
+      >
+        <p className="reply">{result.suggested_reply}</p>
+      </Section>
+
+      <AIScopeOpinion ai={result.ai} />
+      <p className="note">{result.note}</p>
+    </div>
+  );
+}
+
 function ScopeView() {
   const [agreement, setAgreement] = useState("");
   const [request, setRequest] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [useAI, setUseAI] = useState(false);
+  const aiStatus = useAIStatus();
+  const aiOn = useAI && aiReady(aiStatus);
 
   async function run() {
     setLoading(true);
     setError("");
     setResult(null);
     try {
-      setResult(await post("/scope-check", { agreement, new_request: request }));
+      setResult(await post("/scope-check", { agreement, new_request: request, use_ai: aiOn }));
     } catch {
       setError(CONNECTION_ERROR);
     }
@@ -310,6 +502,7 @@ function ScopeView() {
             value={request}
             onChange={(e) => setRequest(e.target.value)}
           />
+          <AIToggle checked={useAI} onChange={setUseAI} status={aiStatus} />
           <div className="actions">
             <button
               type="button"
@@ -327,8 +520,12 @@ function ScopeView() {
       </div>
 
       <div className="output-col">
-        {error && <p className="alert" role="alert">{error}</p>}
-        {loading && <Loading />}
+        {error && (
+          <p className="alert" role="alert">
+            {error}
+          </p>
+        )}
+        {loading && <Loading slow={aiOn} />}
         {!loading && !result && !error && (
           <EmptyState
             title="No scope check yet"
@@ -336,47 +533,317 @@ function ScopeView() {
           />
         )}
 
-        {result && (
-          <div className="panel result">
-            <div className={`verdict ${VERDICT_STYLE[result.verdict] || "warn"}`}>
-              <strong>{result.verdict}</strong>
-              <span>{result.explanation}</span>
-            </div>
+        {result && <ScopeResult result={result} />}
+      </div>
+    </div>
+  );
+}
 
-            <div className="split">
-              <Section title="Covered by the agreement">
-                {result.in_scope?.length ? (
-                  <ul className="plain">
-                    {result.in_scope.map((i) => <li key={i}>{i}</li>)}
-                  </ul>
-                ) : (
-                  <p className="muted">Nothing found.</p>
-                )}
-              </Section>
-              <Section title="Not in the agreement">
-                {result.out_of_scope?.length ? (
-                  <ul className="flags">
-                    {result.out_of_scope.map((i) => <li key={i}>{i}</li>)}
-                  </ul>
-                ) : (
-                  <p className="muted">Nothing found.</p>
-                )}
-              </Section>
-            </div>
+/* ---------- Proposals ---------- */
 
-            {result.revision_note && (
-              <p className="callout">{result.revision_note}</p>
-            )}
+function ProposalResult({ result }) {
+  const ai = result.ai;
+  const facts = [
+    ["Project type", result.project_type, result.project_type === "Unknown"],
+    ["Budget", result.budget, !result.budget],
+    ["Deadline", result.deadline, !result.deadline],
+  ];
 
-            <Section
-              title="Suggested reply"
-              action={<CopyButton label="Copy reply" text={result.suggested_reply} />}
-            >
-              <p className="reply">{result.suggested_reply}</p>
-            </Section>
-
-            <p className="note">{result.note}</p>
+  return (
+    <div className="panel result">
+      <dl className="facts">
+        {facts.map(([label, value, missing]) => (
+          <div key={label} className={missing ? "fact is-missing" : "fact"}>
+            <dt>{label}</dt>
+            <dd>{missing ? "Not mentioned" : value}</dd>
           </div>
+        ))}
+      </dl>
+
+      {ai?.proposal && (
+        <Section
+          title="AI-written proposal"
+          action={<CopyButton label="Copy proposal" text={ai.proposal} />}
+        >
+          <p className="reply pre">{ai.proposal}</p>
+          <p className="muted small">
+            Written by {ai.model}. AI can make mistakes. Check every detail before you send it.
+          </p>
+        </Section>
+      )}
+      {ai?.error && <AIError message={ai.error} />}
+
+      <Section
+        title={ai?.proposal ? "Basic draft (no AI)" : "Proposal draft"}
+        action={<CopyButton label="Copy draft" text={result.draft} />}
+      >
+        <p className="reply pre">{result.draft}</p>
+      </Section>
+
+      {result.milestones?.length > 0 && (
+        <Section title="Suggested milestones">
+          {result.milestones.map((m) => (
+            <div key={m.title} className="milestone">
+              <h4 className="ai-sub">{m.title}</h4>
+              <ul className="plain">
+                {m.tasks.map((t) => (
+                  <li key={t}>{t}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </Section>
+      )}
+
+      <p className="note">{result.note}</p>
+    </div>
+  );
+}
+
+function ProposalView() {
+  const [message, setMessage] = useState("");
+  const [name, setName] = useState("");
+  const [skills, setSkills] = useState("");
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [useAI, setUseAI] = useState(false);
+  const aiStatus = useAIStatus();
+  const aiOn = useAI && aiReady(aiStatus);
+
+  async function run() {
+    setLoading(true);
+    setError("");
+    setResult(null);
+    try {
+      setResult(
+        await post("/proposal", {
+          message,
+          freelancer_name: name,
+          skills,
+          use_ai: aiOn,
+        }),
+      );
+    } catch {
+      setError(CONNECTION_ERROR);
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div className="workspace">
+      <div className="input-col">
+        <div className="panel">
+          <label htmlFor="p-message">Client message</label>
+          <textarea
+            id="p-message"
+            rows={7}
+            placeholder="Paste the job post or the message your client sent you."
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+          />
+          <label htmlFor="p-name">Your name</label>
+          <input
+            id="p-name"
+            type="text"
+            placeholder="For example: Asima"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <label htmlFor="p-skills">Your skills and experience</label>
+          <textarea
+            id="p-skills"
+            rows={3}
+            placeholder="For example: React and FastAPI developer, 2 years of experience."
+            value={skills}
+            onChange={(e) => setSkills(e.target.value)}
+          />
+          <AIToggle checked={useAI} onChange={setUseAI} status={aiStatus} />
+          <div className="actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={run}
+              disabled={loading || !message.trim()}
+            >
+              {loading ? "Writing" : "Write proposal"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              onClick={() => setMessage(EXAMPLES.analyze)}
+            >
+              Use an example
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="output-col">
+        {error && (
+          <p className="alert" role="alert">
+            {error}
+          </p>
+        )}
+        {loading && <Loading slow={aiOn} />}
+        {!loading && !result && !error && (
+          <EmptyState
+            title="Your proposal will appear here"
+            text="Paste a client message and add your name and skills. You get a ready draft, suggested milestones and the questions to ask. Turn on AI for a more natural version."
+          />
+        )}
+        {result && <ProposalResult result={result} />}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- History ---------- */
+
+function formatDate(iso) {
+  try {
+    return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return iso;
+  }
+}
+
+const KIND_LABEL = { analyze: "Message analysis", scope: "Scope check", proposal: "Proposal" };
+
+function SavedInput({ record }) {
+  const { input } = record;
+  return (
+    <div className="saved-input">
+      {record.kind === "scope" ? (
+        <>
+          <h4>Original agreement</h4>
+          <p>{input.agreement}</p>
+          <h4>New client request</h4>
+          <p>{input.new_request}</p>
+        </>
+      ) : (
+        <>
+          <h4>Client message</h4>
+          <p>{input.message}</p>
+          {record.kind === "proposal" && (input.freelancer_name || input.skills) && (
+            <>
+              <h4>Your details</h4>
+              <p>{[input.freelancer_name, input.skills].filter(Boolean).join(" · ")}</p>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SavedResult({ record }) {
+  if (record.kind === "scope") return <ScopeResult result={record.result} />;
+  if (record.kind === "proposal") return <ProposalResult result={record.result} />;
+  return <AnalyzeResult result={record.result} />;
+}
+
+function HistoryView() {
+  const [items, setItems] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [error, setError] = useState("");
+
+  async function load() {
+    try {
+      setItems(await get("/history"));
+      setError("");
+    } catch {
+      setError(CONNECTION_ERROR);
+      setItems([]);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function open(id) {
+    try {
+      setSelected(await get(`/history/${id}`));
+    } catch {
+      setError(CONNECTION_ERROR);
+    }
+  }
+
+  async function remove(id) {
+    if (!window.confirm("Delete this item from your history?")) return;
+    try {
+      await fetch(`${API}/history/${id}`, { method: "DELETE" });
+      if (selected?.id === id) setSelected(null);
+      load();
+    } catch {
+      setError(CONNECTION_ERROR);
+    }
+  }
+
+  return (
+    <div className="workspace">
+      <div className="input-col">
+        <div className="panel history-panel">
+          <div className="section-head">
+            <h3>Saved work</h3>
+            <button type="button" className="btn btn-quiet" onClick={load}>
+              Refresh
+            </button>
+          </div>
+
+          {error && (
+            <p className="alert" role="alert">
+              {error}
+            </p>
+          )}
+          {items === null && <p className="muted">Loading</p>}
+          {items && items.length === 0 && !error && (
+            <p className="muted">
+              Nothing saved yet. Every message analysis and scope check you run is saved here
+              automatically.
+            </p>
+          )}
+
+          <ul className="history-list">
+            {items?.map((item) => (
+              <li key={item.id} className={selected?.id === item.id ? "is-open" : ""}>
+                <button type="button" className="history-open" onClick={() => open(item.id)}>
+                  <span className={`badge ${item.kind}`}>{KIND_LABEL[item.kind]}</span>
+                  <strong>{item.title}</strong>
+                  <span className="meta">
+                    {item.summary} · {formatDate(item.created_at)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="history-delete"
+                  onClick={() => remove(item.id)}
+                  aria-label={`Delete: ${item.title}`}
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <div className="output-col">
+        {!selected && (
+          <EmptyState
+            title="Pick an item to review"
+            text="Open any saved analysis or scope check to see the full result again."
+          />
+        )}
+        {selected && (
+          <>
+            <div className="panel">
+              <SavedInput record={selected} />
+            </div>
+            <div className="gap" />
+            <SavedResult record={selected} />
+          </>
         )}
       </div>
     </div>
@@ -388,8 +855,8 @@ function ScopeView() {
 const NAV = [
   { id: "analyze", label: "Message analyzer", icon: "analyze" },
   { id: "scope", label: "Scope check", icon: "scope" },
-  { id: "history", label: "Project history", icon: "history", soon: true },
-  { id: "proposals", label: "Proposals", icon: "proposal", soon: true },
+  { id: "history", label: "History", icon: "history" },
+  { id: "proposals", label: "Proposals", icon: "proposal" },
 ];
 
 const TITLES = {
@@ -400,6 +867,14 @@ const TITLES = {
   scope: {
     h: "Check a request against your agreement",
     p: "Spot extra work early and reply without losing the client.",
+  },
+  proposals: {
+    h: "Write a proposal for a client",
+    p: "Turn the client's message into a clear draft with milestones and questions.",
+  },
+  history: {
+    h: "Your saved work",
+    p: "Every analysis and scope check is saved here so you can come back to it.",
   },
 };
 
@@ -430,7 +905,9 @@ export default function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="logo" aria-hidden="true">FP</span>
+          <span className="logo" aria-hidden="true">
+            FP
+          </span>
           <div>
             <strong>FreelancePilot</strong>
             <span>Plan before you quote</span>
@@ -471,7 +948,10 @@ export default function App() {
           <h1>{TITLES[tab].h}</h1>
           <p>{TITLES[tab].p}</p>
         </header>
-        {tab === "analyze" ? <AnalyzeView /> : <ScopeView />}
+        {tab === "analyze" && <AnalyzeView />}
+        {tab === "scope" && <ScopeView />}
+        {tab === "proposals" && <ProposalView />}
+        {tab === "history" && <HistoryView />}
       </main>
     </div>
   );
